@@ -3,7 +3,7 @@ import glob
 import torch
 from datasets import load_dataset
 from vocab import prepare_data, normalize_string, tensor_from_sentence, SOS_token, EOS_token
-from model import EncoderRNN, DecoderRNN
+from model import EncoderRNN, AttnDecoderRNN
 
 def evaluate(encoder, decoder, vocab, sentence, max_length=20):
     # Turn off gradients since we are not training
@@ -15,6 +15,7 @@ def evaluate(encoder, decoder, vocab, sentence, max_length=20):
         input_tensor = tensor_from_sentence(vocab, input_normalized).unsqueeze(0) 
         
         # 2. Pass the input through the Encoder
+        # Get BOTH the hidden state and the full outputs from the Encoder
         encoder_outputs, encoder_hidden = encoder(input_tensor)
         
         # 3. Prepare the Decoder's initial inputs
@@ -25,7 +26,8 @@ def evaluate(encoder, decoder, vocab, sentence, max_length=20):
         
         # 4. Generate the response word by word
         for _ in range(max_length):
-            decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden)
+            # MODIFIED: Pass encoder_outputs into the Attention Decoder
+            decoder_output, decoder_hidden, attn_weights = decoder(decoder_input, decoder_hidden, encoder_outputs)
             
             # Squeeze out the sequence length dimension just like in training
             decoder_output = decoder_output.squeeze(1)
@@ -82,7 +84,7 @@ def chat_with_bot():
     hidden_size = 256
     print(f"Loading saved models ({encoder_path} and {decoder_path})...")
     encoder = EncoderRNN(vocab.num_words, hidden_size)
-    decoder = DecoderRNN(hidden_size, vocab.num_words)
+    decoder = AttnDecoderRNN(hidden_size, vocab.num_words)
     
     # Load the saved weights
     encoder.load_state_dict(torch.load(encoder_path))

@@ -7,7 +7,7 @@ from tqdm import tqdm  # Add this import
 
 # Import your custom modules
 from vocab import prepare_data, prepare_batch, SOS_token, PAD_token
-from model import EncoderRNN, DecoderRNN
+from model import EncoderRNN, AttnDecoderRNN
 
 def train_step(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion):
     # 1. Clear previous gradients
@@ -16,6 +16,7 @@ def train_step(input_tensor, target_tensor, encoder, decoder, encoder_optimizer,
 
     # 2. Forward pass through the Encoder
     # input_tensor shape: (batch_size, sequence_length)
+    # Now we explicitly keep the 'encoder_outputs' for the Attention mechanism
     encoder_outputs, encoder_hidden = encoder(input_tensor)
 
     # 3. Prepare initial Decoder inputs
@@ -32,8 +33,10 @@ def train_step(input_tensor, target_tensor, encoder, decoder, encoder_optimizer,
 
     # 4. Teacher Forcing Loop: Pass the actual target words as the next input
     for t in range(target_length):
-        decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden)
-        
+        # MODIFIED: Pass encoder_outputs into the decoder
+        # The AttnDecoderRNN.forward() now expects three arguments
+        decoder_output, decoder_hidden, attn_weights = decoder(decoder_input, decoder_hidden, encoder_outputs)
+
         # FIX: Remove the sequence length dimension (dim 1) 
         # Changes shape from (batch_size, 1, vocab_size) to (batch_size, vocab_size)
         decoder_output = decoder_output.squeeze(1)
@@ -60,7 +63,7 @@ def train_epochs(epochs, batch_size=32, hidden_size=256, learning_rate=0.001):
     print("Initializing models...")
     # Instantiate the Encoder and Decoder
     encoder = EncoderRNN(input_vocab_size=vocab.num_words, hidden_size=hidden_size)
-    decoder = DecoderRNN(hidden_size=hidden_size, output_vocab_size=vocab.num_words)
+    decoder = AttnDecoderRNN(hidden_size=hidden_size, output_vocab_size=vocab.num_words)
     
     # Set up Optimizers
     encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
