@@ -1,59 +1,78 @@
+import os
+import glob
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import random
 from datasets import load_dataset
-from tqdm import tqdm  # Add this import
+from tqdm import tqdm
 
-# Import your custom modules
 from vocab import prepare_data, prepare_batch, SOS_token, PAD_token
 from model import EncoderRNN, AttnDecoderRNN
 
+# Import the evaluate function you already wrote in your chat script!
+from chat import evaluate  
+
 def train_step(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion):
-    # 1. Clear previous gradients
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
 
-    # 2. Forward pass through the Encoder
-    # input_tensor shape: (batch_size, sequence_length)
-    # Now we explicitly keep the 'encoder_outputs' for the Attention mechanism
     encoder_outputs, encoder_hidden = encoder(input_tensor)
 
-    # 3. Prepare initial Decoder inputs
     batch_size = input_tensor.size(0)
-    
-    # The first token for every sequence in the batch is the <SOS> token
     decoder_input = torch.tensor([[SOS_token]] * batch_size)
-    
-    # The initial hidden state of the Decoder is the final hidden state of the Encoder
     decoder_hidden = encoder_hidden
 
     loss = 0
     target_length = target_tensor.size(1)
 
-    # 4. Teacher Forcing Loop: Pass the actual target words as the next input
     for t in range(target_length):
-        # MODIFIED: Pass encoder_outputs into the decoder
-        # The AttnDecoderRNN.forward() now expects three arguments
         decoder_output, decoder_hidden, attn_weights = decoder(decoder_input, decoder_hidden, encoder_outputs)
-
-        # FIX: Remove the sequence length dimension (dim 1) 
-        # Changes shape from (batch_size, 1, vocab_size) to (batch_size, vocab_size)
+        
         decoder_output = decoder_output.squeeze(1)
-        
-        # Calculate loss for this specific time step
         loss += criterion(decoder_output, target_tensor[:, t])
-        
-        # Teacher forcing: the next input is the current ground-truth target word
         decoder_input = target_tensor[:, t].unsqueeze(1)
 
-    # 5. Backpropagation and Optimization
     loss.backward()
     encoder_optimizer.step()
     decoder_optimizer.step()
 
-    # Return the average loss per token for this batch
     return loss.item() / target_length
+
+def get_latest_epoch():
+    """Finds the highest epoch number from the saved checkpoint files."""
+    encoder_files = glob.glob("encoder_epoch_*.pth")
+    if not encoder_files:
+        return None
+    
+    epochs = []
+    for f in encoder_files:
+        try:
+            epoch = int(f.split('_')[-1].split('.')[0])
+            epochs.append(epoch)
+        except ValueError:
+            continue
+            
+    return max(epochs) if epochs else None
+
+def evaluate_randomly(encoder, decoder, vocab, pairs, n=2):
+    """Picks random training pairs and prints the bot's prediction vs the actual target."""
+    # Temporarily set models to evaluation mode to disable dropout
+    encoder.eval()
+    decoder.eval()
+    
+    for i in range(n):
+        pair = random.choice(pairs)
+        print(f"> Input:  {pair[0]}")
+        print(f"= Target: {pair[1]}")
+        
+        # Use the evaluate function to generate a response
+        output_words = evaluate(encoder, decoder, vocab, pair[0])
+        print(f"< Bot:    {output_words}\n")
+        
+    # Set models back to training mode
+    encoder.train()
+    decoder.train()
 
 def train_epochs(epochs, batch_size=32, hidden_size=256, learning_rate=0.001):
     print("Loading data...")
@@ -61,52 +80,58 @@ def train_epochs(epochs, batch_size=32, hidden_size=256, learning_rate=0.001):
     vocab, training_pairs = prepare_data(dataset['train'])
     
     print("Initializing models...")
-    # Instantiate the Encoder and Decoder
     encoder = EncoderRNN(input_vocab_size=vocab.num_words, hidden_size=hidden_size)
     decoder = AttnDecoderRNN(hidden_size=hidden_size, output_vocab_size=vocab.num_words)
     
-    # Set up Optimizers
     encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
     decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate)
-    
-    # Set up the Loss Function
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_token)
 
-    print(f"Starting training for {epochs} epochs...")
+    # --- RESUME TRAINING LOGIC ---
+    start_epoch = 1
+    latest_epoch = get_latest_epoch()
     
-    for epoch in range(1, epochs + 1):
-        # Shuffle the data at the start of each epoch
+    if latest_epoch is not None:
+        print(f"Found checkpoints from epoch {latest_epoch}. Resuming training!")
+        encoder.load_state_dict(torch.load(f"encoder_epoch_{latest_epoch}.pth", weights_only=True))
+        decoder.load_state_dict(torch.load(f"decoder_epoch_{latest_epoch}.pth", weights_only=True))
+        
+        # Start at the next subsequent epoch
+        start_epoch = latest_epoch + 1
+
+    # Check if we have already reached the target number of epochs
+    if start_epoch > epochs:
+        print(f"Model already trained to {latest_epoch} epochs. Increase the 'epochs' argument to train further.")
+        return
+
+    print(f"Starting training from epoch {start_epoch} to {epochs}...")
+    
+    for epoch in range(start_epoch, epochs + 1):
         random.shuffle(training_pairs)
         epoch_loss = 0
         
-        # Wrap our range() in tqdm to create the progress bar
         batch_iterator = tqdm(range(0, len(training_pairs), batch_size), 
                               desc=f"Epoch {epoch}/{epochs}", 
                               unit="batch")
         
-        # Iterate through the data using the progress bar
         for i in batch_iterator:
             batch_pairs = training_pairs[i:i+batch_size]
-            
-            # Convert text to padded tensors
             input_tensors, target_tensors = prepare_batch(vocab, batch_pairs)
             
-            # Run the training step
             loss = train_step(input_tensors, target_tensors, encoder, decoder, 
                               encoder_optimizer, decoder_optimizer, criterion)
             
             epoch_loss += loss
-            
-            # Update the progress bar to show the current loss in real-time
             batch_iterator.set_postfix(loss=f"{loss:.4f}")
                 
         print(f"\n--- Epoch {epoch} Complete | Average Loss: {epoch_loss / (len(training_pairs) / batch_size):.4f} ---")
         
-        # --- NEW CHECKPOINTING LOGIC ---
-        # Save a unique file for each epoch so you never lose progress
+        # --- RANDOM EVALUATION ---
+        print("\n--- Random Evaluation ---")
+        evaluate_randomly(encoder, decoder, vocab, training_pairs, n=2)
+        
         checkpoint_name_enc = f"encoder_epoch_{epoch}.pth"
         checkpoint_name_dec = f"decoder_epoch_{epoch}.pth"
-        
         print(f"Saving checkpoint to {checkpoint_name_enc} and {checkpoint_name_dec}...")
         torch.save(encoder.state_dict(), checkpoint_name_enc)
         torch.save(decoder.state_dict(), checkpoint_name_dec)
@@ -114,6 +139,4 @@ def train_epochs(epochs, batch_size=32, hidden_size=256, learning_rate=0.001):
     print("\nTraining completely finished!")
 
 if __name__ == "__main__":
-    # Bumped the epochs up to 10 for a proper training run!
     train_epochs(epochs=10, batch_size=64)
-
