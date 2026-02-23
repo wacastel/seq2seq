@@ -1,6 +1,7 @@
 import os
 import glob
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset
 from vocab import prepare_data, normalize_string, tensor_from_sentence, SOS_token, EOS_token
 from model import EncoderRNN, AttnDecoderRNN
@@ -22,10 +23,9 @@ def get_latest_epoch():
             
     return max(epochs) if epochs else None
 
-# 1. Add 'persona' as an argument
-def evaluate(encoder, decoder, vocab, persona, sentence, max_length=20):
+# 1. Added a 'temperature' parameter (defaulting to 0.7 is a standard practice)
+def evaluate(encoder, decoder, vocab, persona, sentence, max_length=20, temperature=0.7):
     with torch.no_grad():
-        # 2. Combine the persona and the user's input, just like in training!
         input_text = f"{persona} {sentence}"
         input_normalized = normalize_string(input_text)
         
@@ -39,18 +39,28 @@ def evaluate(encoder, decoder, vocab, persona, sentence, max_length=20):
         decoded_words = []
         
         for _ in range(max_length):
+            # Your decoder outputs raw "logits" (un-normalized scores)
             decoder_output, decoder_hidden, attn_weights = decoder(decoder_input, decoder_hidden, encoder_outputs)
-            
             decoder_output = decoder_output.squeeze(1)
-            topv, topi = decoder_output.topk(1)
-            predicted_id = topi.item()
+            
+            # --- NEW: Temperature Scaling & Sampling ---
+            # 1. Scale the logits by the temperature
+            scaled_logits = decoder_output / temperature
+            
+            # 2. Convert the scaled logits into a probability distribution (values between 0 and 1)
+            probs = torch.softmax(scaled_logits, dim=1)
+            
+            # 3. Roll the dice! Sample 1 word randomly based on its calculated probability
+            predicted_id = torch.multinomial(probs, 1).item()
+            # -------------------------------------------
             
             if predicted_id == EOS_token:
                 break
             else:
                 decoded_words.append(vocab.index2word[predicted_id])
                 
-            decoder_input = topi.detach().view(1, 1)
+            # Convert the chosen integer ID back into a tensor for the next time step
+            decoder_input = torch.tensor([[predicted_id]])
             
         return " ".join(decoded_words)
 
