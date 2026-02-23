@@ -87,8 +87,8 @@ def chat_with_bot():
     decoder = AttnDecoderRNN(hidden_size, vocab.num_words)
     
     # Load the saved weights
-    encoder.load_state_dict(torch.load(encoder_path))
-    decoder.load_state_dict(torch.load(decoder_path))
+    encoder.load_state_dict(torch.load(encoder_path, weights_only=True))
+    decoder.load_state_dict(torch.load(decoder_path, weights_only=True))
     
     # Set models to evaluation mode (disables dropout layers for consistent predictions)
     encoder.eval()
